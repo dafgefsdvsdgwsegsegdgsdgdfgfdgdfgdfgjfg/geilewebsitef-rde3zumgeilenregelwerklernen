@@ -31,6 +31,8 @@
     modePenaltyBtn: document.getElementById("modePenaltyBtn"),
     modeMeaningBtn: document.getElementById("modeMeaningBtn"),
     modeCodeBtn: document.getElementById("modeCodeBtn"),
+    modeYesNoBtn: document.getElementById("modeYesNoBtn"),
+    modeTypeBtn: document.getElementById("modeTypeBtn"),
     answerCount: document.getElementById("answerCount"),
     keyHint: document.getElementById("keyHint"),
   };
@@ -58,6 +60,7 @@
   const allCodeOptions = unique(baseRules.map((r) => r._code));
   const meaningToRule = buildIndex(baseRules, (r) => r._meaning);
   const codeToRule = buildIndex(baseRules, (r) => r._code);
+  const normalizedCodeToRule = buildIndex(baseRules, (r) => normalizeCode(r._code));
   const codeGroups = buildGroups(baseRules, (r) => codeGroup(r._code));
 
   let queue = [];
@@ -73,6 +76,7 @@
   let hintUsed = false;
   let activeChoiceCount = 4;
   let bookmarked = loadBookmarked();
+  let yesNoState = null;
   let mode = loadMode();
   let answerCount = loadAnswerCount();
 
@@ -132,10 +136,15 @@
     return shuffleInPlace(uniqBase);
   }
 
-  function pickMeaningChoices(correctMeaning) {
-    const pool = allMeaningOptions.filter((m) => m !== correctMeaning);
+  function pickMeaningChoicesForRule(rule) {
+    const correctMeaning = rule && rule._meaning ? rule._meaning : "Keine Angabe";
+    const group = codeGroup(rule && rule._code ? rule._code : "");
+    const groupRules = codeGroups.get(group) || [];
+    const groupMeanings = groupRules.map((r) => r._meaning);
+    const source = groupMeanings.length ? unique(groupMeanings) : allMeaningOptions;
+    const pool = source.filter((m) => m !== correctMeaning);
     shuffleInPlace(pool);
-    return fillChoices([correctMeaning], pool, allMeaningOptions);
+    return fillChoices([correctMeaning], pool, source);
   }
 
   function pickCodeChoices(correctCode) {
@@ -168,6 +177,22 @@
       if (next && !uniqBase.includes(next)) uniqBase.push(next);
     }
     return shuffleInPlace(uniqBase);
+  }
+
+  function pickMeaningFromSameGroup(rule) {
+    const group = codeGroup(rule._code);
+    const groupRules = codeGroups.get(group) || [];
+    if (groupRules.length <= 1) return rule._meaning;
+    const pool = groupRules.map((r) => r._meaning).filter((m) => m !== rule._meaning);
+    shuffleInPlace(pool);
+    return pool[0] || rule._meaning;
+  }
+
+  function buildYesNoState(rule) {
+    const isTrue = Math.random() < 0.5;
+    const shownMeaning = isTrue ? rule._meaning : pickMeaningFromSameGroup(rule);
+    const statement = `${rule._code} bedeutet: „${shownMeaning}“`;
+    return { isTrue, shownMeaning, statement };
   }
 
   function setStats() {
@@ -374,9 +399,94 @@
     els.feedbackBody.innerHTML = lines.join("");
   }
 
+  function showFeedbackYesNo({ ok, rule, chosen, isTrue, statement }) {
+    els.feedback.hidden = false;
+    els.feedbackBadge.classList.toggle("good", ok);
+    els.feedbackBadge.classList.toggle("bad", !ok);
+    els.feedbackBadge.textContent = ok ? "RICHTIG" : "FALSCH";
+
+    const correctAnswer = isTrue ? "Ja" : "Nein";
+    els.feedbackTitle.textContent = ok
+      ? "Passt."
+      : `Deine Antwort: „${chosen}“ — korrekt ist: „${correctAnswer}“`;
+
+    const lines = [];
+    lines.push(`<div><span class="muted">Aussage:</span> ${escapeHtml(statement)}</div>`);
+    lines.push(
+      `<div style="margin-top:6px"><span class="muted">Korrekt:</span> <b>${escapeHtml(
+        correctAnswer
+      )}</b></div>`
+    );
+    lines.push(
+      `<div style="margin-top:10px"><span class="muted">Richtig wäre:</span> ${escapeHtml(
+        rule._code
+      )} → “${escapeHtml(rule._meaning)}”</div>`
+    );
+
+    if (!isTrue) {
+      const other = meaningToRule.get(yesNoState?.shownMeaning || "");
+      if (other && other._code !== rule._code) {
+        lines.push(
+          `<div style="margin-top:6px"><span class="muted">Hinweis:</span> Die Aussage passt eigentlich zu <b>${escapeHtml(
+            other._code
+          )}</b>.</div>`
+        );
+      }
+    }
+
+    const exp = buildExplanationBlock(rule);
+    if (exp) lines.push(exp);
+    els.feedbackBody.innerHTML = lines.join("");
+  }
+
+  function showFeedbackType({ ok, rule, entered }) {
+    els.feedback.hidden = false;
+    els.feedbackBadge.classList.toggle("good", ok);
+    els.feedbackBadge.classList.toggle("bad", !ok);
+    els.feedbackBadge.textContent = ok ? "RICHTIG" : "FALSCH";
+
+    const clean = String(entered || "").trim();
+    els.feedbackTitle.textContent = ok
+      ? "Passt."
+      : `Deine Eingabe: „${clean || "—"}“ — korrekt ist: „${rule._code}“`;
+
+    const pen = rule.penalty && rule.penalty.trim() ? rule.penalty.trim() : "Keine Angabe";
+    const lines = [];
+    lines.push(`<div><span class="muted">Regeltext:</span> ${escapeHtml(rule.text)}</div>`);
+    lines.push(
+      `<div style="margin-top:6px"><span class="muted">Korrekt:</span> <b>${escapeHtml(
+        rule._code
+      )}</b></div>`
+    );
+    if (clean) {
+      lines.push(
+        `<div style="margin-top:6px"><span class="muted">Eingegeben:</span> ${escapeHtml(
+          clean
+        )}</div>`
+      );
+    }
+    lines.push(`<div style="margin-top:6px"><span class="muted">Sanktion:</span> ${escapeHtml(pen)}</div>`);
+
+    if (!ok && clean) {
+      const other = normalizedCodeToRule.get(normalizeCode(clean));
+      if (other && other._code !== rule._code) {
+        lines.push(
+          `<div style="margin-top:10px"><span class="muted">Warum falsch?</span><div style="margin-top:6px">Deine Eingabe passt eigentlich zu <b>${escapeHtml(
+            other._code
+          )}</b>: “${escapeHtml(other._meaning)}”.</div></div>`
+        );
+      }
+    }
+
+    const exp = buildExplanationBlock(rule);
+    if (exp) lines.push(exp);
+    els.feedbackBody.innerHTML = lines.join("");
+  }
+
   function renderQuestion() {
     locked = false;
     hintUsed = false;
+    yesNoState = null;
     els.nextBtn.disabled = true;
     els.feedback.hidden = true;
     els.feedbackBody.textContent = "";
@@ -389,22 +499,33 @@
     const correctPenalty =
       rule.penalty && rule.penalty.trim() ? rule.penalty.trim() : "Keine Angabe";
 
-    if (mode === "code") els.ruleMeta.textContent = `${rule.section}`;
-    else if (mode === "meaning") els.ruleMeta.textContent = `${rule.section} · ${rule._code}`;
+    if (mode === "code" || mode === "type") els.ruleMeta.textContent = `${rule.section}`;
+    else if (mode === "meaning" || mode === "yesno") els.ruleMeta.textContent = `${rule.section} · ${rule._code}`;
     else els.ruleMeta.textContent = `${rule.section} · ${rule.id}`;
     updateBookmarkUI(rule);
 
     const choices =
       mode === "meaning"
-        ? pickMeaningChoices(rule._meaning)
+        ? pickMeaningChoicesForRule(rule)
         : mode === "code"
           ? pickCodeChoices(rule._code)
-          : pickPenaltyChoicesWithCount(correctPenalty);
+          : mode === "type"
+            ? []
+          : mode === "yesno"
+            ? ["Ja", "Nein"]
+            : pickPenaltyChoicesWithCount(correctPenalty);
     els.answers.innerHTML = "";
 
     if (mode === "meaning") {
       els.question.textContent = `Was ist ${rule._code}?`;
       els.hintText.textContent = "Frage: Welche Beschreibung passt zu dieser Regelnummer?";
+    } else if (mode === "type") {
+      els.question.textContent = rule.text;
+      els.hintText.textContent = "Frage: Schreib die passende Regelnummer (z.B. Allg. 6.2).";
+    } else if (mode === "yesno") {
+      yesNoState = buildYesNoState(rule);
+      els.question.textContent = yesNoState.statement;
+      els.hintText.textContent = "Frage: Stimmt diese Aussage? (Ja/Nein)";
     } else if (mode === "code") {
       els.question.textContent = rule.text;
       els.hintText.textContent = "Frage: Welche Regelnummer ist das?";
@@ -415,12 +536,51 @@
 
     questionStartMs = performance.now();
 
+    if (mode === "type") {
+      const wrap = document.createElement("div");
+      wrap.className = "typeWrap";
+
+      const input = document.createElement("input");
+      input.className = "typeInput";
+      input.type = "text";
+      input.inputMode = "text";
+      input.autocomplete = "off";
+      input.spellcheck = false;
+      input.placeholder = "z.B. Allg. 6.2";
+      input.setAttribute("aria-label", "Regelnummer eingeben");
+
+      const submit = document.createElement("button");
+      submit.type = "button";
+      submit.className = "btn";
+      submit.textContent = "Prüfen";
+      submit.addEventListener("click", () => onTypeSubmit(input.value, rule));
+
+      input.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          submit.click();
+        }
+      });
+
+      wrap.appendChild(input);
+      wrap.appendChild(submit);
+      els.answers.appendChild(wrap);
+
+      activeChoiceCount = 0;
+      updateKeyHint();
+      if (els.hintBtn) els.hintBtn.disabled = true;
+      setStats();
+      setTimeout(() => input.focus(), 0);
+      return;
+    }
+
     choices.forEach((value, idx) => {
       const btn = document.createElement("button");
       btn.type = "button";
       btn.className = "ans";
       if (mode === "meaning") btn.dataset.meaning = value;
       else if (mode === "code") btn.dataset.code = value;
+      else if (mode === "yesno") btn.dataset.yesno = value;
       else btn.dataset.penalty = value;
       btn.dataset.index = String(idx);
       btn.innerHTML = `<span class="num">${idx + 1}</span>${escapeHtml(value)}`;
@@ -435,6 +595,29 @@
     setStats();
   }
 
+  function onTypeSubmit(value, rule) {
+    if (locked) return;
+    locked = true;
+    if (els.unsureBtn) els.unsureBtn.disabled = true;
+    if (els.hintBtn) els.hintBtn.disabled = true;
+
+    recordTime();
+
+    const entered = String(value || "");
+    const ok = normalizeCode(entered) === normalizeCode(rule._code);
+
+    if (ok) correctCount += 1;
+    else {
+      wrongCount += 1;
+      wrongIds.add(rule._qid);
+    }
+    streak = ok ? streak + 1 : 0;
+
+    showFeedbackType({ ok, rule, entered });
+    els.nextBtn.disabled = false;
+    setStats();
+  }
+
   function markButtonsAfterChoice(chosenBtn, correctPenalty) {
     const buttons = Array.from(els.answers.querySelectorAll(".ans"));
     for (const b of buttons) b.disabled = true;
@@ -442,6 +625,7 @@
     for (const b of buttons) {
       const isCorrect = (() => {
         if (mode === "meaning") return b.dataset.meaning === queue[currentIndex]._meaning;
+        if (mode === "yesno") return (b.dataset.yesno === "Ja") === Boolean(yesNoState && yesNoState.isTrue);
         if (mode === "code") return b.dataset.code === queue[currentIndex]._code;
         return b.dataset.penalty === correctPenalty;
       })();
@@ -462,9 +646,12 @@
     const chosenMeaning = btn.dataset.meaning;
     const chosenPenalty = btn.dataset.penalty;
     const chosenCode = btn.dataset.code;
+    const chosenYesNo = btn.dataset.yesno;
     const ok =
       mode === "meaning"
         ? chosenMeaning === rule._meaning
+        : mode === "yesno"
+          ? (chosenYesNo === "Ja") === Boolean(yesNoState && yesNoState.isTrue)
         : mode === "code"
           ? chosenCode === rule._code
           : chosenPenalty === correctPenalty;
@@ -484,6 +671,14 @@
         rule,
         chosenMeaning,
         correctMeaning: rule._meaning,
+      });
+    } else if (mode === "yesno") {
+      showFeedbackYesNo({
+        ok,
+        rule,
+        chosen: chosenYesNo,
+        isTrue: Boolean(yesNoState && yesNoState.isTrue),
+        statement: yesNoState ? yesNoState.statement : "",
       });
     } else if (mode === "code") {
       showFeedbackCode({
@@ -524,6 +719,21 @@
         rule,
         chosenMeaning: "Unsicher",
         correctMeaning: rule._meaning,
+      });
+    } else if (mode === "type") {
+      showFeedbackType({
+        ok: false,
+        rule,
+        entered: "Unsicher",
+      });
+    } else if (mode === "yesno") {
+      if (!yesNoState) yesNoState = buildYesNoState(rule);
+      showFeedbackYesNo({
+        ok: false,
+        rule,
+        chosen: "Unsicher",
+        isTrue: Boolean(yesNoState && yesNoState.isTrue),
+        statement: yesNoState ? yesNoState.statement : "",
       });
     } else if (mode === "code") {
       showFeedbackCode({
@@ -593,14 +803,20 @@
     saveMode(mode);
 
     const codeActive = mode === "code";
+    const yesNoActive = mode === "yesno";
+    const typeActive = mode === "type";
     const meaningActive = mode === "meaning";
     const penaltyActive = mode === "penalty";
 
     els.modeCodeBtn.classList.toggle("active", codeActive);
+    if (els.modeYesNoBtn) els.modeYesNoBtn.classList.toggle("active", yesNoActive);
+    if (els.modeTypeBtn) els.modeTypeBtn.classList.toggle("active", typeActive);
     els.modeMeaningBtn.classList.toggle("active", meaningActive);
     els.modePenaltyBtn.classList.toggle("active", penaltyActive);
 
     els.modeCodeBtn.setAttribute("aria-pressed", codeActive ? "true" : "false");
+    if (els.modeYesNoBtn) els.modeYesNoBtn.setAttribute("aria-pressed", yesNoActive ? "true" : "false");
+    if (els.modeTypeBtn) els.modeTypeBtn.setAttribute("aria-pressed", typeActive ? "true" : "false");
     els.modeMeaningBtn.setAttribute("aria-pressed", meaningActive ? "true" : "false");
     els.modePenaltyBtn.setAttribute("aria-pressed", penaltyActive ? "true" : "false");
 
@@ -612,6 +828,8 @@
     try {
       const v = localStorage.getItem("de3_rules_trainer_mode");
       if (v === "meaning") return "meaning";
+      if (v === "yesno") return "yesno";
+      if (v === "type") return "type";
       if (v === "penalty") return "penalty";
       return "code";
     } catch {
@@ -647,7 +865,50 @@
 
   function updateKeyHint() {
     const n = Math.max(1, Math.min(4, Number(activeChoiceCount) || 1));
+    if (mode === "yesno") {
+      els.keyHint.textContent = "Tipp: 1 = Ja • 2 = Nein • U = Unsicher • B = Merken";
+      return;
+    }
+    if (mode === "type") {
+      els.keyHint.textContent = "Tipp: Regelnummer eintippen und Enter drücken • U = Unsicher • B = Merken";
+      return;
+    }
     els.keyHint.textContent = `Tipp: Zahlen (1–${n}) wählen • U = Unsicher • H = Hinweis • B = Merken`;
+  }
+
+  function normalizeCode(s) {
+    const raw = String(s || "").trim();
+    if (!raw) return "";
+
+    return raw
+      .toLowerCase()
+      .replace(/\s+/g, "")
+      .replaceAll("„", "")
+      .replaceAll("“", "")
+      .replaceAll("”", "")
+      .replaceAll('"', "")
+      .replaceAll("'", "")
+      .replaceAll(":", "")
+      .replaceAll(";", "")
+      .replaceAll(",", "")
+      .replaceAll("·", "")
+      .replaceAll("allgemein", "allg")
+      .replaceAll("allg.", "allg")
+      .replaceAll("allg", "allg")
+      .replaceAll("rp.", "rp")
+      .replaceAll("rp", "rp")
+      .replaceAll("leader.", "leader")
+      .replaceAll("leader", "leader")
+      .replaceAll("event.", "event")
+      .replaceAll("event", "event")
+      .replaceAll("ghetto.", "ghetto")
+      .replaceAll("ghetto", "ghetto")
+      .replaceAll("turf.", "turf")
+      .replaceAll("turf", "turf")
+      .replaceAll("greenzone.", "greenzone")
+      .replaceAll("greenzone", "greenzone")
+      .replaceAll("wahl.", "wahl")
+      .replaceAll("wahl", "wahl");
   }
 
   function bookmarkKey(rule) {
@@ -772,6 +1033,8 @@
 
   els.modeMeaningBtn.addEventListener("click", () => setMode("meaning"));
   els.modeCodeBtn.addEventListener("click", () => setMode("code"));
+  if (els.modeYesNoBtn) els.modeYesNoBtn.addEventListener("click", () => setMode("yesno"));
+  if (els.modeTypeBtn) els.modeTypeBtn.addEventListener("click", () => setMode("type"));
   els.modePenaltyBtn.addEventListener("click", () => setMode("penalty"));
   if (els.unsureBtn) els.unsureBtn.addEventListener("click", onUnsure);
   if (els.hintBtn) els.hintBtn.addEventListener("click", useHint5050);
@@ -790,6 +1053,17 @@
   }
 
   window.addEventListener("keydown", (e) => {
+    const target = e.target;
+    const tag = target && target.tagName ? String(target.tagName).toUpperCase() : "";
+    const isTyping =
+      tag === "INPUT" || tag === "TEXTAREA" || Boolean(target && target.isContentEditable);
+    if (isTyping) {
+      if (e.key === "Enter" && !els.nextBtn.disabled && els.summary.hidden) {
+        e.preventDefault();
+        els.nextBtn.click();
+      }
+      return;
+    }
     if (e.key === "Enter" && !els.nextBtn.disabled && els.summary.hidden) {
       els.nextBtn.click();
       return;

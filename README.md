@@ -11,6 +11,8 @@ Ein kleines Offline-Lernprogramm (Quiz) für die Serverregeln.
 ## Modi (Tabs)
 
 - `Regelnummer`: Regeltext → passende Regelnummer wählen (z.B. `Allg. 6.2`)
+- `Ja/Nein`: Aussage anzeigen → entscheiden ob sie stimmt
+- `Eingabe`: Regeltext → Regelnummer ins Feld tippen (z.B. `Allg. 6.2`)
 - `Regel finden`: Regelnummer → passende Beschreibung wählen
 - `Sanktion`: Regeltext → richtige Strafe wählen
 
